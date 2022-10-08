@@ -5,7 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
-
+#include "spinlock.h"
+#include "proc.h"
 /*
  * the kernel's page table.
  */
@@ -14,6 +15,7 @@ pagetable_t kernel_pagetable;
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
+
 
 void iter_vmprint(pagetable_t pagetable, int level, char *printlev[] ){
 
@@ -66,6 +68,27 @@ kvminit()
   kvmmap(TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
 }
 
+
+pagetable_t
+pkvminit(){
+  pagetable_t kernelPagetable = (pagetable_t)kalloc();
+  memset(kernelPagetable, 0, PGSIZE);
+
+  mappages(kernelPagetable,UART0,PGSIZE,UART0, PTE_R | PTE_W);
+
+  mappages(kernelPagetable,VIRTIO0,PGSIZE,VIRTIO0,PTE_R | PTE_W);
+
+  mappages(kernelPagetable,CLINT,0x10000,CLINT,PTE_R | PTE_W);
+
+  mappages(kernelPagetable,PLIC,0x400000,PLIC,PTE_R | PTE_W);
+
+  mappages(kernelPagetable,KERNBASE, (uint64)etext-KERNBASE,KERNBASE,PTE_R | PTE_X);
+
+  mappages(kernelPagetable,(uint64)etext,PHYSTOP-(uint64)etext,(uint64)etext,PTE_R | PTE_W);
+
+  mappages(kernelPagetable,TRAMPOLINE,PGSIZE,(uint64)trampoline,PTE_R | PTE_X);
+  return kernelPagetable;
+}
 // Switch h/w page table register to the kernel's page table,
 // and enable paging.
 void
@@ -150,8 +173,9 @@ kvmpa(uint64 va)
   uint64 off = va % PGSIZE;
   pte_t *pte;
   uint64 pa;
-  
-  pte = walk(kernel_pagetable, va, 0);
+
+
+  pte = walk(myproc()->kernelPagetable, va, 0);
   if(pte == 0)
     panic("kvmpa");
   if((*pte & PTE_V) == 0)
