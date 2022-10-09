@@ -49,21 +49,20 @@ sys_sbrk(void)
   if(argint(0, &n) < 0)
     return -1;
   addr = myproc()->sz;
+
   if(addr+n>=PLIC){
     return -1;
   }
   if(growproc(n) < 0)
     return -1;
   if(n>0){
-    for (int j=addr; j<addr+n; j=j+PGSIZE){
-      upte = walk(p->pagetable,j,0);
-      kpte = walk(p->kernelPagetable,j,1);
-      *kpte = (*upte) & ~PTE_U;
+    for (int i=addr; i<addr+n; i=i+PGSIZE){
+      upte = walk(p->pagetable,i,0);
+      kpte = walk(p->kernelPagetable,i,1);
+      *kpte = *upte & ~PTE_U;
     }
   }else{
-    for(int j=addr-PGSIZE; j>=addr+n; j-=PGSIZE){
-      uvmunmap(p->kernelPagetable,j,1,0);
-    }
+    uvmunmap(p->kernelPagetable,PGROUNDUP(p->sz),(PGROUNDUP(addr)-PGROUNDUP(p->sz))/PGSIZE,0);
   }
 
   return addr;

@@ -52,8 +52,6 @@ exec(char *path, char **argv)
     uint64 sz1;
     if((sz1 = uvmalloc(pagetable, sz, ph.vaddr + ph.memsz)) == 0)
       goto bad;
-    if(sz1>=PLIC)
-      goto bad;
     sz = sz1;
     if(ph.vaddr % PGSIZE != 0)
       goto bad;
@@ -74,9 +72,9 @@ exec(char *path, char **argv)
   if((sz1 = uvmalloc(pagetable, sz, sz + 2*PGSIZE)) == 0)
     goto bad;
   sz = sz1;
-  // if(sz>=PLIC){
-  //   goto bad;
-  // }
+  if(sz>=PLIC){
+    goto bad;
+  }
   uvmclear(pagetable, sz-2*PGSIZE);
   sp = sz;
   stackbase = sp - PGSIZE;
@@ -103,12 +101,6 @@ exec(char *path, char **argv)
   if(copyout(pagetable, sp, (char *)ustack, (argc+1)*sizeof(uint64)) < 0)
     goto bad;
 
-  uvmunmap(p->kernelPagetable,0,PGROUNDUP(oldsz)/PGSIZE,0);
-  for (int j=0; j<sz; j=j+PGSIZE){
-    upte = walk(pagetable,j,0);
-    kpte = walk(p->kernelPagetable,j,1);
-    *kpte = (*upte) & ~PTE_U;
-  }
 
   // arguments to user main(argc, argv)
   // argc is returned via the system call return
@@ -129,12 +121,12 @@ exec(char *path, char **argv)
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
 
-  // uvmunmap(p->kernelPagetable,0,PGROUNDUP(oldsz)/PGSIZE,0);
-  // for (int j=0; j<p->sz; j=j+PGSIZE){
-  //   upte = walk(p->pagetable,j,0);
-  //   kpte = walk(p->kernelPagetable,j,1);
-  //   *kpte = (*upte) & ~PTE_U;
-  // }
+  uvmunmap(p->kernelPagetable,0,PGROUNDUP(oldsz)/PGSIZE,0);
+  for (int i=0; i<p->sz; i=i+PGSIZE){
+    upte = walk(p->pagetable,i,0);
+    kpte = walk(p->kernelPagetable,i,1);
+    *kpte = *upte & ~PTE_U;
+  }
 
   if(p->pid==1)
   {

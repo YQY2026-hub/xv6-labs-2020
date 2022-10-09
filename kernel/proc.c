@@ -242,7 +242,7 @@ userinit(void)
 
   upte = walk(p->pagetable,0,0);
   kpte =walk(p->kernelPagetable,0,1);
-  *kpte = (*upte) & ~PTE_U;
+  *kpte = *upte & ~PTE_U;
 
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
@@ -298,10 +298,10 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
-  for (int j=0; j<np->sz; j=j+PGSIZE){
-    upte = walk(np->pagetable,j,0);
-    kpte = walk(np->kernelPagetable,j,1);
-    *kpte = (*upte) & ~PTE_U;
+  for (int i=0; i<np->sz; i=i+PGSIZE){
+    upte = walk(np->pagetable,i,0);
+    kpte = walk(np->kernelPagetable,i,1);
+    *kpte = *upte & ~PTE_U;
   }
 
   np->parent = p;
