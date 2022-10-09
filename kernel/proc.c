@@ -143,7 +143,7 @@ freeproc(struct proc *p)
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   if(p->kernelPagetable)
-    proc_freekernel(p->kernelPagetable,p->kstack);
+    proc_freekernel(p->kernelPagetable,p->kstack,p->sz);
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -155,17 +155,18 @@ freeproc(struct proc *p)
   p->state = UNUSED;
 }
 
-void proc_freekernel(pagetable_t pagetable,uint64 kstack)
+void proc_freekernel(pagetable_t pagetable,uint64 kstack,uint64 sz)
 {
   uvmunmap(pagetable,TRAMPOLINE,1,0);
   uvmunmap(pagetable,(uint64)etext,PGROUNDUP(PHYSTOP-(uint64)etext)/PGSIZE,0);
   uvmunmap(pagetable,KERNBASE,PGROUNDUP((uint64)etext-KERNBASE)/PGSIZE,0);
   uvmunmap(pagetable,PLIC,(0x400000)/PGSIZE,0);
-  uvmunmap(pagetable,CLINT,(0x10000)/PGSIZE,0);
   uvmunmap(pagetable,VIRTIO0,1,0);
   uvmunmap(pagetable,UART0,1,0);
   
   uvmunmap(pagetable,kstack,1,1);
+
+  uvmunmap(pagetable,0,PGROUNDUP(sz)/PGSIZE,0);
   freewalk(pagetable);
 }
 
@@ -229,6 +230,7 @@ void
 userinit(void)
 {
   struct proc *p;
+  pte_t *upte,*kpte;
 
   p = allocproc();
   initproc = p;
@@ -237,6 +239,10 @@ userinit(void)
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
+
+  upte = walk(p->pagetable,0,0);
+  kpte =walk(p->kernelPagetable,0,1);
+  *kpte = (*upte) & ~PTE_U;
 
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
@@ -278,6 +284,7 @@ fork(void)
   int i, pid;
   struct proc *np;
   struct proc *p = myproc();
+  pte_t *upte,*kpte;
 
   // Allocate process.
   if((np = allocproc()) == 0){
@@ -291,6 +298,11 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
+  for (int j=0; j<np->sz; j=j+PGSIZE){
+    upte = walk(np->pagetable,j,0);
+    kpte = walk(np->kernelPagetable,j,1);
+    *kpte = (*upte) & ~PTE_U;
+  }
 
   np->parent = p;
 
