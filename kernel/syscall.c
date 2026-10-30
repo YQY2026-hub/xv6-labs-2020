@@ -7,6 +7,9 @@
 #include "syscall.h"
 #include "defs.h"
 
+extern uint64 sys_sysinfo(void);
+
+
 static char *syscall_names[] = {
 [SYS_fork]    "fork",
 [SYS_exit]    "exit",
@@ -30,6 +33,8 @@ static char *syscall_names[] = {
 [SYS_mkdir]   "mkdir",
 [SYS_close]   "close",
 [SYS_trace]   "trace",
+[SYS_sysinfo] "sysinfo",
+
 };
 
 
@@ -155,6 +160,8 @@ static uint64 (*syscalls[])(void) = {
 [SYS_link]    sys_link,
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
+[SYS_sysinfo] sys_sysinfo,
+
 };
 
 void
