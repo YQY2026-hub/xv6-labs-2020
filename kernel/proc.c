@@ -26,12 +26,13 @@ extern char etext[];
 void
 procinit(void)
 {
-  struct proc *p;
-  
-  initlock(&pid_lock, "nextpid");
-  for(p = proc; p < &proc[NPROC]; p++) {
-      initlock(&p->lock, "proc");
-  }
+    char *pa = kalloc();
+  if(pa == 0)
+    panic("kalloc");
+  uint64 va = KSTACK((int) (p - proc));
+  uvmmap(p->kernelpt, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;
+
 }
 
 // Must be called with interrupts disabled,
@@ -108,6 +109,11 @@ found:
   if(p->pagetable == 0){
     freeproc(p);
     release(&p->lock);
+    uvmunmap(p->kernelpt, p->kstack, 1, 1);
+    p->kstack = 0;
+    proc_freekernelpt(p->kernelpt);
+    p->kernelpt = 0;
+
     return 0;
   }
 
@@ -129,6 +135,15 @@ found:
   p->context.sp = p->kstack + PGSIZE;
 
   return p;
+
+  p->kernelpt = proc_kpt_init();
+  if(p->kernelpt == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+
 }
 
 // free a proc structure and the data hanging from it,
@@ -501,10 +516,14 @@ scheduler(void)
         // to release its lock and then reacquire it
         // before jumping back to us.
         p->state = RUNNING;
+	proc_inithart(p->kernelpt);
+
         c->proc = p;
         w_satp(MAKE_SATP(p->kernelPagetable));
         sfence_vma();
         swtch(&c->context, &p->context);
+	kvminithart();
+
 
         kvminithart();
         // Process is done running for now.
@@ -728,4 +747,19 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+void
+proc_freekernelpt(pagetable_t kernelpt)
+{
+  for(int i = 0; i < 512; i++){
+    pte_t pte = kernelpt[i];
+    if(pte & PTE_V){
+      kernelpt[i] = 0;
+      if ((pte & (PTE_R|PTE_W|PTE_X)) == 0){
+        uint64 child = PTE2PA(pte);
+        proc_freekernelpt((pagetable_t)child);
+      }
+    }
+  }
+  kfree((void*)kernelpt);
 }

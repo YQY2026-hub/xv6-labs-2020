@@ -159,6 +159,13 @@ void            uartputc_sync(int);
 int             uartgetc(void);
 
 // vm.c
+
+
+void            uvmmap(pagetable_t, uint64, uint64, uint64, int);
+pagetable_t     proc_kpt_init(void);
+void            proc_inithart(pagetable_t);
+void            proc_freekernelpt(pagetable_t);
+
 void            kvminit(void);
 void            kvminithart(void);
 uint64          kvmpa(uint64);
