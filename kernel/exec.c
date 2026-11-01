@@ -121,6 +121,7 @@ exec(char *path, char **argv)
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
 
+<<<<<<< Updated upstream
   uvmunmap(p->kernelPagetable,0,PGROUNDUP(oldsz)/PGSIZE,0);
   for (int i=0; i<p->sz; i=i+PGSIZE){
     upte = walk(p->pagetable,i,0);
@@ -132,6 +133,11 @@ exec(char *path, char **argv)
   {
     vmprint(p->pagetable);
   }
+=======
+  if(p->pid == 1)
+    vmprint(p->pagetable);
+
+>>>>>>> Stashed changes
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
  bad:
