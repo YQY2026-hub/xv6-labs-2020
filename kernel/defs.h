@@ -92,6 +92,7 @@ int             fork(void);
 int             growproc(int);
 pagetable_t     proc_pagetable(struct proc *);
 void            proc_freepagetable(pagetable_t, uint64);
+void            proc_freekernelpt(struct proc *);
 int             kill(int);
 struct cpu*     mycpu(void);
 struct cpu*     getmycpu(void);
@@ -108,7 +109,6 @@ void            yield(void);
 int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
 int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
-void            proc_freekernel(pagetable_t pagetable,uint64 kstack,uint64 sz);
 
 // swtch.S
 void            swtch(struct context*, struct context*);
@@ -159,17 +159,13 @@ void            uartputc_sync(int);
 int             uartgetc(void);
 
 // vm.c
-
-
-void            uvmmap(pagetable_t, uint64, uint64, uint64, int);
-pagetable_t     proc_kpt_init(void);
-void            proc_inithart(pagetable_t);
-void            proc_freekernelpt(pagetable_t);
-
 void            kvminit(void);
+pagetable_t     kvmmake(void);
 void            kvminithart(void);
 uint64          kvmpa(uint64);
-void            kvmmap(uint64, uint64, uint64, int);
+void            kvmmap(pagetable_t, uint64, uint64, uint64, int);
+void            vmprint(pagetable_t);
+void            u2kvmcopy(pagetable_t, pagetable_t, uint64, uint64);
 int             mappages(pagetable_t, uint64, uint64, uint64, int);
 pagetable_t     uvmcreate(void);
 void            uvminit(pagetable_t, uchar *, uint);
@@ -187,19 +183,9 @@ pte_t *         walk(pagetable_t, uint64, int);
 int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
-void            vmprint(pagetable_t);
-<<<<<<< Updated upstream
-pagetable_t     pkvminit(void);
-void            freewalk(pagetable_t);
 int             copyin_new(pagetable_t, char *, uint64, uint64);
 int             copyinstr_new(pagetable_t, char *, uint64, uint64);
-=======
-void            u2kvmcopy(pagetable_t, pagetable_t, uint64, uint64);
-int             copyin_new(pagetable_t, char *, uint64, uint64);
-int             copyinstr_new(pagetable_t, char *, uint64, uint64);
-
-
->>>>>>> Stashed changes
+int             statscopyin(char *, int);
 
 // plic.c
 void            plicinit(void);

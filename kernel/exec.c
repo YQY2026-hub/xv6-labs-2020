@@ -20,7 +20,6 @@ exec(char *path, char **argv)
   struct proghdr ph;
   pagetable_t pagetable = 0, oldpagetable;
   struct proc *p = myproc();
-  pte_t *upte,*kpte;
 
   begin_op();
 
@@ -72,14 +71,9 @@ exec(char *path, char **argv)
   if((sz1 = uvmalloc(pagetable, sz, sz + 2*PGSIZE)) == 0)
     goto bad;
   sz = sz1;
-  if(sz>=PLIC){
-    goto bad;
-  }
   uvmclear(pagetable, sz-2*PGSIZE);
   sp = sz;
   stackbase = sp - PGSIZE;
-  u2kvmcopy(pagetable, p->kernelpt, 0, sz);
-
 
   // Push argument strings, prepare rest of stack in ustack.
   for(argc = 0; argv[argc]; argc++) {
@@ -103,7 +97,6 @@ exec(char *path, char **argv)
   if(copyout(pagetable, sp, (char *)ustack, (argc+1)*sizeof(uint64)) < 0)
     goto bad;
 
-
   // arguments to user main(argc, argv)
   // argc is returned via the system call return
   // value, which goes in a0.
@@ -123,23 +116,13 @@ exec(char *path, char **argv)
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
 
-<<<<<<< Updated upstream
-  uvmunmap(p->kernelPagetable,0,PGROUNDUP(oldsz)/PGSIZE,0);
-  for (int i=0; i<p->sz; i=i+PGSIZE){
-    upte = walk(p->pagetable,i,0);
-    kpte = walk(p->kernelPagetable,i,1);
-    *kpte = *upte & ~PTE_U;
-  }
-
-  if(p->pid==1)
-  {
-    vmprint(p->pagetable);
-  }
-=======
   if(p->pid == 1)
     vmprint(p->pagetable);
 
->>>>>>> Stashed changes
+  // copy the new user mappings into the per-process kernel page
+  // table, so that copyin/copyinstr can use plain loads/stores.
+  u2kvmcopy(p->pagetable, p->kernelpt, 0, sz);
+
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
  bad:
