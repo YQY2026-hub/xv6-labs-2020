@@ -47,6 +47,7 @@ int main(int argc, char *argv[])
         // 子进程：启动第一级素数筛选
         close(init_pipe[1]);  // 关闭不用的写端
         sieve(init_pipe[0]);
+        exit(0);
     } else {
         // 父进程：向初始管道写入 2 到 35 的所有整数
         close(init_pipe[0]);  // 关闭不用的读端
