@@ -67,6 +67,22 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+
+    // Timer interrupt: account for the alarm. Once the interval has
+    // expired, divert the process into its user handler.
+    if(which_dev == 2 && p->alarm_interval > 0){
+      p->alarm_ticks++;
+      if(p->alarm_ticks >= p->alarm_interval && p->alarm_on == 0){
+        p->alarm_ticks = 0;
+        p->alarm_on = 1;
+        // Save the *whole* trapframe, not just epc: the interrupted
+        // user code may hold meaningful values in any register, and
+        // those have to come back when the handler calls sigreturn().
+        memmove(p->alarm_trapframe, p->trapframe, sizeof(struct trapframe));
+        // Return to user space at the handler instead.
+        p->trapframe->epc = p->alarm_handler;
+      }
+    }
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());

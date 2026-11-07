@@ -114,6 +114,24 @@ printf(char *fmt, ...)
     release(&pr.lock);
 }
 
+// Print a backtrace of the kernel call stack: the saved return
+// address of every active stack frame, innermost first.
+void
+backtrace(void)
+{
+  uint64 fp = r_fp();
+  uint64 top = PGROUNDUP(fp);
+
+  printf("backtrace:\n");
+  while(fp != 0 && fp < top){
+    // in a frame, fp-8 holds the return address and
+    // fp-16 holds the frame pointer of the caller.
+    uint64 ra = *(uint64 *)(fp - 8);
+    printf("%p\n", ra);
+    fp = *(uint64 *)(fp - 16);
+  }
+}
+
 void
 panic(char *s)
 {
@@ -121,6 +139,7 @@ panic(char *s)
   printf("panic: ");
   printf(s);
   printf("\n");
+  backtrace();
   panicked = 1; // freeze uart output from other CPUs
   for(;;)
     ;

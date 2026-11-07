@@ -352,3 +352,31 @@ sfence_vma()
 
 typedef uint64 pte_t;
 typedef uint64 *pagetable_t; // 512 PTEs
+
+// read the current frame pointer (s0).
+// gcc keeps the frame pointer of the running kernel function in s0
+// because xv6 is compiled with -fno-omit-frame-pointer.
+static inline uint64
+r_fp()
+{
+  uint64 x;
+  asm volatile("mv %0, s0" : "=r" (x) );
+  return x;
+}
+
+// Physical memory protection (PMP) CSRs.
+// Newer QEMU enables PMP by default; without a permissive entry
+// supervisor mode cannot even fetch instructions after the first mret.
+static inline void
+w_pmpaddr0(uint64 x)
+{
+  asm volatile("csrw pmpaddr0, %0" : : "r" (x));
+}
+
+static inline void
+w_pmpcfg0(uint64 x)
+{
+  asm volatile("csrw pmpcfg0, %0" : : "r" (x));
+}
+
+
