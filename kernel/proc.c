@@ -281,6 +281,27 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
+    if (PGROUNDUP(sz + n) >= PLIC){
+      return -1;
+    }
+    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+      return -1;
+    }
+    u2kvmcopy(p->pagetable, p->kernelpt, sz - n, sz);
+  } else if(n < 0){
+    sz = uvmdealloc(p->pagetable, sz, sz + n);
+  }
+  p->sz = sz;
+  return 0;
+}
+
+
+growproc(int n){
+  uint sz;
+  struct proc *p = myproc();
+
+  sz = p->sz;
+  if(n > 0){
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
@@ -313,6 +334,8 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
+  u2kvmcopy(np->pagetable, np->kernelpt, 0, np->sz);
+
   for (int i=0; i<np->sz; i=i+PGSIZE){
     upte = walk(np->pagetable,i,0);
     kpte = walk(np->kernelPagetable,i,1);

@@ -194,6 +194,9 @@ void            freewalk(pagetable_t);
 int             copyin_new(pagetable_t, char *, uint64, uint64);
 int             copyinstr_new(pagetable_t, char *, uint64, uint64);
 =======
+void            u2kvmcopy(pagetable_t, pagetable_t, uint64, uint64);
+int             copyin_new(pagetable_t, char *, uint64, uint64);
+int             copyinstr_new(pagetable_t, char *, uint64, uint64);
 
 
 >>>>>>> Stashed changes
