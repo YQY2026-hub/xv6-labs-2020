@@ -7,6 +7,7 @@
 #include "syscall.h"
 #include "defs.h"
 
+extern uint64 sys_trace(void);
 extern uint64 sys_sysinfo(void);
 
 
@@ -160,6 +161,7 @@ static uint64 (*syscalls[])(void) = {
 [SYS_link]    sys_link,
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
+[SYS_trace]   sys_trace,
 [SYS_sysinfo] sys_sysinfo,
 
 };
