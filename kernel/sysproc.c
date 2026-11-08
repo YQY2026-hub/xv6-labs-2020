@@ -41,14 +41,29 @@ sys_wait(void)
 uint64
 sys_sbrk(void)
 {
-  int addr;
+  uint64 addr;
   int n;
+  struct proc *p = myproc();
 
   if(argint(0, &n) < 0)
     return -1;
-  addr = myproc()->sz;
-  if(growproc(n) < 0)
-    return -1;
+
+  addr = p->sz;
+
+  if(n < 0){
+    // shrinking the heap: release the pages that now fall outside it.
+    if(p->sz < (uint64)(-n))
+      return -1;
+    uint64 newsz = p->sz + n;
+    uvmunmap(p->pagetable, PGROUNDUP(newsz),
+             (PGROUNDUP(p->sz) - PGROUNDUP(newsz)) / PGSIZE, 1);
+    p->sz = newsz;
+  } else {
+    // growing: only record the new size. the physical pages are
+    // allocated on first touch, by the page fault handler.
+    p->sz += n;
+  }
+
   return addr;
 }
 

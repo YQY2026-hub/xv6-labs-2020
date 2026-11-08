@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -167,6 +169,54 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   return 0;
 }
 
+// Lazily back a heap address with a freshly allocated page.
+// sbrk() only records the new size; the physical page is created on
+// the first access, either from a page fault in usertrap() or from
+// copyin/copyout when a syscall touches a not-yet-touched page.
+// Returns 0 on success, -1 if va is not a valid lazy heap address or
+// if we ran out of memory (the caller then kills the process).
+int
+lazyalloc(struct proc *p, uint64 va)
+{
+  uint64 a = PGROUNDDOWN(va);
+  char *mem;
+  pte_t *pte;
+
+  // only addresses inside the process's heap may be allocated.
+  if(va >= p->sz)
+    return -1;
+  if(a >= MAXVA)
+    return -1;
+
+  // if the page is already mapped this is not a lazy allocation: for
+  // instance the stack guard page, which exec() maps without PTE_U.
+  // Touching it must kill the process, not silently allocate.
+  pte = walk(p->pagetable, a, 0);
+  if(pte != 0 && (*pte & PTE_V))
+    return -1;
+
+  if((mem = kalloc()) == 0)
+    return -1;
+  memset(mem, 0, PGSIZE);
+  if(mappages(p->pagetable, a, PGSIZE, (uint64)mem, PTE_R|PTE_W|PTE_U) != 0){
+    kfree(mem);
+    return -1;
+  }
+  return 0;
+}
+
+// helper for copyin/copyout/copyinstr: if the page belongs to the
+// current process's lazy heap, materialise it and retry.
+static int
+lazyfix(pagetable_t pagetable, uint64 va)
+{
+  struct proc *p = myproc();
+
+  if(p == 0 || p->pagetable != pagetable)
+    return -1;
+  return lazyalloc(p, va);
+}
+
 // Remove npages of mappings starting from va. va must be
 // page-aligned. The mappings must exist.
 // Optionally free the physical memory.
@@ -180,10 +230,12 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     panic("uvmunmap: not aligned");
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
+    // lazy allocation means a page in the range may never have been
+    // touched, so there is nothing to unmap for it.
     if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
+      continue;
     if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+      continue;
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
@@ -314,10 +366,12 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
+    // pages of a lazily allocated heap may not exist yet; the child
+    // simply inherits the same "not allocated" state.
     if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
+      continue;
     if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+      continue;
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
@@ -359,8 +413,13 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
+    if(pa0 == 0){
+      if(lazyfix(pagetable, va0) < 0)
+        return -1;
+      pa0 = walkaddr(pagetable, va0);
+      if(pa0 == 0)
+        return -1;
+    }
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
@@ -384,8 +443,13 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
     pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
+    if(pa0 == 0){
+      if(lazyfix(pagetable, va0) < 0)
+        return -1;
+      pa0 = walkaddr(pagetable, va0);
+      if(pa0 == 0)
+        return -1;
+    }
     n = PGSIZE - (srcva - va0);
     if(n > len)
       n = len;
@@ -411,8 +475,13 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   while(got_null == 0 && max > 0){
     va0 = PGROUNDDOWN(srcva);
     pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
+    if(pa0 == 0){
+      if(lazyfix(pagetable, va0) < 0)
+        return -1;
+      pa0 = walkaddr(pagetable, va0);
+      if(pa0 == 0)
+        return -1;
+    }
     n = PGSIZE - (srcva - va0);
     if(n > max)
       n = max;

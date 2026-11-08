@@ -65,6 +65,14 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if(r_scause() == 13 || r_scause() == 15){
+    // load or store page fault: the program touched a heap page that
+    // sbrk() recorded but never backed with physical memory.
+    uint64 va = r_stval();
+    if(lazyalloc(p, va) < 0){
+      printf("usertrap(): page fault va=%p pid=%d\n", va, p->pid);
+      p->killed = 1;
+    }
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
