@@ -16,6 +16,13 @@
 #include "file.h"
 #include "fcntl.h"
 
+// How many symbolic links open() will follow before giving up.  A chain
+// that long is almost certainly a cycle.
+#define MAXFOLLOW 10
+
+// Defined further down; sys_symlink needs it.
+static struct inode* create(char *path, short type, short major, short minor);
+
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
 static int
@@ -165,6 +172,38 @@ bad:
   return -1;
 }
 
+// Create a symbolic link at path that points at target.
+// The target string is kept in the new inode's data block; it does not
+// have to name an existing file.  Returns 0 on success, -1 on failure.
+uint64
+sys_symlink(void)
+{
+  char target[MAXPATH], path[MAXPATH];
+  struct inode *ip;
+  int n;
+
+  if((n = argstr(0, target, MAXPATH)) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+  if(n == 0)
+    return -1;
+
+  begin_op();
+  // create() returns the new inode locked.
+  if((ip = create(path, T_SYMLINK, 0, 0)) == 0){
+    end_op();
+    return -1;
+  }
+  // user_src == 0: target is a kernel buffer, not a user address.
+  if(writei(ip, 0, (uint64)target, 0, n) != n){
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+  iunlockput(ip);
+  end_op();
+  return 0;
+}
+
 // Is the directory dp empty except for "." and ".." ?
 static int
 isdirempty(struct inode *dp)
@@ -309,6 +348,35 @@ sys_open(void)
       return -1;
     }
     ilock(ip);
+
+    // Follow symbolic links unless the caller asked for the link itself.
+    // A link's target lives in its data block, so read it out and look the
+    // resulting name up.  Stop after MAXFOLLOW hops: a cycle such as
+    // b -> a -> b would otherwise loop forever.
+    for(int depth = 0; ip->type == T_SYMLINK && (omode & O_NOFOLLOW) == 0; depth++){
+      if(depth >= MAXFOLLOW){
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      char target[MAXPATH+1];
+      int m = readi(ip, 0, (uint64)target, 0, MAXPATH);
+      if(m <= 0){
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      target[m] = '\0';
+      // Release the link's lock before namei(), which may lock other
+      // inodes and would deadlock against us holding this one.
+      iunlockput(ip);
+      if((ip = namei(target)) == 0){
+        end_op();
+        return -1;
+      }
+      ilock(ip);
+    }
+
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
       end_op();

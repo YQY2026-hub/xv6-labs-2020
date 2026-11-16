@@ -38,6 +38,14 @@ start()
   w_mideleg(0xffff);
   w_sie(r_sie() | SIE_SEIE | SIE_STIE | SIE_SSIE);
 
+  // configure Physical Memory Protection to give supervisor mode
+  // access to all of physical memory.  NAPOT with an all-ones address
+  // covers the entire address space; the TOR encoding (0xf) used by
+  // older xv6 releases is rejected by newer QEMU, which enables PMP by
+  // default.
+  w_pmpaddr0(0x3fffffffffffffull);
+  w_pmpcfg0(0x1f);
+
   // ask for clock interrupts.
   timerinit();
 
