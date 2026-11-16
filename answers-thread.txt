@@ -1,0 +1,33 @@
+Why do both threads lose keys?
+
+Because a lost insertion is not a fault of one particular thread: whichever
+put() writes to the bucket last overwrites the other one's work, and with two
+threads each one wins some races and loses some.  With a single thread there
+is no concurrent writer, so nothing can be overwritten.
+
+put() is not atomic: it first walks the bucket's chain looking for the key,
+and only afterwards links a new entry at the head by writing *p = e, where
+p is &table[i].  Two threads that hash to the same bucket can interleave
+like this:
+
+  thread 1: put(k1)  reads table[i], chain head is X, k1 not found
+  thread 2: put(k2)  reads table[i], chain head is still X, k2 not found
+  thread 1: insert()  e1->next = X; table[i] = e1
+  thread 2: insert()  e2->next = X; table[i] = e2
+
+Now table[i] points to e2 only.  e1 is no longer reachable from the bucket,
+so k1 has vanished even though put(k1) returned normally.  If the two stores
+happen in the other order then k2 is the one that disappears, which is why
+both threads report missing keys rather than just one.
+
+There is a second, subtler race on the read side: a thread walking the chain
+in get() (or in the "already present?" scan of put()) can read table[i] just
+before another thread replaces the head, and then follow a chain that is no
+longer linked into the table.  Protecting each bucket with its own mutex
+fixes both problems, since the whole search-and-insert remains atomic with
+respect to other threads touching the same bucket.
+
+The fix in ph.c uses one mutex per bucket (NBUCKET = 1021).  Because the
+critical section is now per bucket rather than per table, two threads hashing
+to different buckets run their put()s in parallel, which is what lets the
+two-thread run beat the one-thread run by more than 1.25x.

@@ -11,9 +11,32 @@
 #define MAX_THREAD  4
 
 
+/* Saved registers of a thread, laid out to match the sd/ld offsets in
+ * uthread_switch.S.  The xv6 kernel does the same thing in struct context:
+ * only the callee-saved registers are kept, because the caller-saved ones
+ * are already dead at the point where thread_switch() is called.
+ */
+struct thread_context {
+  uint64 ra;
+  uint64 sp;
+  uint64 s0;
+  uint64 s1;
+  uint64 s2;
+  uint64 s3;
+  uint64 s4;
+  uint64 s5;
+  uint64 s6;
+  uint64 s7;
+  uint64 s8;
+  uint64 s9;
+  uint64 s10;
+  uint64 s11;
+};
+
 struct thread {
   char       stack[STACK_SIZE]; /* the thread's stack */
   int        state;             /* FREE, RUNNING, RUNNABLE */
+  struct thread_context context; /* registers saved while not running */
 
 };
 struct thread all_thread[MAX_THREAD];
@@ -59,10 +82,11 @@ thread_schedule(void)
     next_thread->state = RUNNING;
     t = current_thread;
     current_thread = next_thread;
-    /* YOUR CODE HERE
-     * Invoke thread_switch to switch from t to next_thread:
-     * thread_switch(??, ??);
+    /* thread_switch() spills the callee-saved registers of t into t's
+     * context, loads next_thread's registers, and rets into whatever
+     * next_thread was doing when it was last switched out.
      */
+    thread_switch((uint64)&t->context, (uint64)&next_thread->context);
   } else
     next_thread = 0;
 }
@@ -76,7 +100,15 @@ thread_create(void (*func)())
     if (t->state == FREE) break;
   }
   t->state = RUNNABLE;
-  // YOUR CODE HERE
+
+  // Give the new thread an initial context such that the first
+  // thread_switch() into it "returns" to func() with its own stack.
+  memset(&t->context, 0, sizeof(t->context));
+  t->context.ra = (uint64)func;
+  // The stack grows down, so start at the top.  Round down to a 16-byte
+  // boundary because the RISC-V ABI expects sp to be 16-byte aligned on
+  // function entry.
+  t->context.sp = ((uint64)t->stack + STACK_SIZE) & ~((uint64)15);
 }
 
 void 

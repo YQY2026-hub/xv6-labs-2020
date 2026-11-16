@@ -5,7 +5,11 @@
 #include <pthread.h>
 #include <sys/time.h>
 
-#define NBUCKET 5
+// One lock per bucket instead of a single lock over the whole table:
+// threads working on different buckets never touch the same memory, so
+// they can run in parallel.  5 buckets would make collisions between two
+// threads far too frequent, so use a larger prime.
+#define NBUCKET 1021
 #define NKEYS 100000
 
 struct entry {
@@ -14,6 +18,7 @@ struct entry {
   struct entry *next;
 };
 struct entry *table[NBUCKET];
+pthread_mutex_t bucket_lock[NBUCKET];
 int keys[NKEYS];
 int nthread = 1;
 
@@ -40,6 +45,7 @@ void put(int key, int value)
 {
   int i = key % NBUCKET;
 
+  pthread_mutex_lock(&bucket_lock[i]);
   // is the key already present?
   struct entry *e = 0;
   for (e = table[i]; e != 0; e = e->next) {
@@ -53,6 +59,7 @@ void put(int key, int value)
     // the new is new.
     insert(key, value, &table[i], table[i]);
   }
+  pthread_mutex_unlock(&bucket_lock[i]);
 }
 
 static struct entry*
@@ -60,11 +67,12 @@ get(int key)
 {
   int i = key % NBUCKET;
 
-
+  pthread_mutex_lock(&bucket_lock[i]);
   struct entry *e = 0;
   for (e = table[i]; e != 0; e = e->next) {
     if (e->key == key) break;
   }
+  pthread_mutex_unlock(&bucket_lock[i]);
 
   return e;
 }
@@ -109,6 +117,9 @@ main(int argc, char *argv[])
   }
   nthread = atoi(argv[1]);
   tha = malloc(sizeof(pthread_t) * nthread);
+  for (int i = 0; i < NBUCKET; i++) {
+    assert(pthread_mutex_init(&bucket_lock[i], NULL) == 0);
+  }
   srandom(0);
   assert(NKEYS % nthread == 0);
   for (int i = 0; i < NKEYS; i++) {
