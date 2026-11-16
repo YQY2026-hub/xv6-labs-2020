@@ -332,6 +332,11 @@ sfence_vma()
 #define PTE_X (1L << 3)
 #define PTE_U (1L << 4) // 1 -> user can access
 
+// RSW (reserved for software) bit used to mark a copy-on-write page.
+// A COW page is mapped read-only in both the parent and the child; the
+// first write faults and the kernel then makes a private copy.
+#define PTE_COW (1L << 8)
+
 // shift a physical address to the right place for a PTE.
 #define PA2PTE(pa) ((((uint64)pa) >> 12) << 10)
 
@@ -352,3 +357,19 @@ sfence_vma()
 
 typedef uint64 pte_t;
 typedef uint64 *pagetable_t; // 512 PTEs
+// Physical memory protection (PMP) CSRs.
+// Newer QEMU enables PMP by default; without a permissive entry
+// supervisor mode cannot even fetch instructions after the first mret.
+static inline void
+w_pmpaddr0(uint64 x)
+{
+  asm volatile("csrw pmpaddr0, %0" : : "r" (x));
+}
+
+static inline void
+w_pmpcfg0(uint64 x)
+{
+  asm volatile("csrw pmpcfg0, %0" : : "r" (x));
+}
+
+

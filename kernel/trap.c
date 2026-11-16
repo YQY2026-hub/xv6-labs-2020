@@ -65,6 +65,13 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if(r_scause() == 15){
+    // store page fault: most likely a write to a copy-on-write page
+    // inherited from the parent at fork() time.
+    // cowalloc() returns -1 if this is not a COW page (a genuine bad
+    // write) or if memory ran out; both cases must kill the process.
+    if(cowalloc(p->pagetable, PGROUNDDOWN(r_stval())) < 0)
+      p->killed = 1;
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
