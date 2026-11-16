@@ -12,6 +12,12 @@
 // * Do not use the buffer after calling brelse.
 // * Only one process at a time can use a buffer,
 //     so do not keep them longer than necessary.
+//
+// The cache is split into NBUCKET hash chains, each with its own spinlock,
+// so that lookups of different blocks do not serialise on one global lock.
+// A global lock serialises the miss path (choosing a victim and recycling
+// it), which keeps the "at most one cached copy of a block" invariant easy
+// to maintain.  Hits never take the global lock, and that is the common case.
 
 
 #include "types.h"
@@ -23,15 +29,41 @@
 #include "fs.h"
 #include "buf.h"
 
-struct {
-  struct spinlock lock;
-  struct buf buf[NBUF];
+// A prime number of buckets, so that blocks that differ by a small
+// multiple do not all land in the same bucket.  Keep it small: initlock()
+// registers every lock in a fixed table of NLOCK (500) entries, and the
+// rest of the kernel already uses about 80 of them.
+#define NBUCKET 13
+#define BHASH(blockno) ((blockno) % NBUCKET)
 
-  // Linked list of all buffers, through prev/next.
-  // Sorted by how recently the buffer was used.
-  // head.next is most recent, head.prev is least.
-  struct buf head;
+struct {
+  struct spinlock lock;               // serialises the miss/recycle path
+  struct buf buf[NBUF];
+  struct spinlock bucketlock[NBUCKET];// one lock per hash chain
+  struct buf *bucket[NBUCKET];        // hash chains of cached blocks
 } bcache;
+
+// Remove b from the chain it is on.  Caller holds that chain's lock.
+static void
+bunlink(struct buf *b)
+{
+  struct buf **pp = &bcache.bucket[BHASH(b->blockno)];
+  while(*pp != 0 && *pp != b)
+    pp = &(*pp)->next;
+  if(*pp != 0)
+    *pp = b->next;
+  b->next = 0;
+}
+
+// Put b at the head of the chain for its current blockno.
+// Caller holds that chain's lock.
+static void
+binsert(struct buf *b)
+{
+  int i = BHASH(b->blockno);
+  b->next = bcache.bucket[i];
+  bcache.bucket[i] = b;
+}
 
 void
 binit(void)
@@ -39,52 +71,109 @@ binit(void)
   struct buf *b;
 
   initlock(&bcache.lock, "bcache");
+  for(int i = 0; i < NBUCKET; i++){
+    initlock(&bcache.bucketlock[i], "bcache.bucket");
+    bcache.bucket[i] = 0;
+  }
 
-  // Create linked list of buffers
-  bcache.head.prev = &bcache.head;
-  bcache.head.next = &bcache.head;
+  // Every buffer starts unused: dev and blockno are 0, which hashes to
+  // bucket 0, so park them all there.  bget picks victims among the
+  // buffers with refcnt == 0 wherever they happen to sit.
   for(b = bcache.buf; b < bcache.buf+NBUF; b++){
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
+    b->valid = 0;
+    b->disk = 0;
+    b->dev = 0;
+    b->blockno = 0;
+    b->refcnt = 0;
+    b->lastuse = 0;
     initsleeplock(&b->lock, "buffer");
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
+    b->next = bcache.bucket[0];
+    bcache.bucket[0] = b;
   }
 }
 
-// Look through buffer cache for block on device dev.
+// Look through the buffer cache for block on device dev.
 // If not found, allocate a buffer.
 // In either case, return locked buffer.
 static struct buf*
 bget(uint dev, uint blockno)
 {
   struct buf *b;
+  int i = BHASH(blockno);
 
-  acquire(&bcache.lock);
-
-  // Is the block already cached?
-  for(b = bcache.head.next; b != &bcache.head; b = b->next){
+  // Fast path: the block is already cached.  Only this bucket's lock is
+  // needed, so blocks in different buckets are looked up in parallel.
+  acquire(&bcache.bucketlock[i]);
+  for(b = bcache.bucket[i]; b != 0; b = b->next){
     if(b->dev == dev && b->blockno == blockno){
       b->refcnt++;
+      b->lastuse = ticks;
+      release(&bcache.bucketlock[i]);
+      acquiresleep(&b->lock);
+      return b;
+    }
+  }
+  release(&bcache.bucketlock[i]);
+
+  // Slow path.  Holding the global lock means no other process is
+  // recycling a buffer at the same time, which is what guarantees that a
+  // block never ends up with two cached copies.
+  acquire(&bcache.lock);
+
+  // Someone may have brought the block in between the two locks.
+  acquire(&bcache.bucketlock[i]);
+  for(b = bcache.bucket[i]; b != 0; b = b->next){
+    if(b->dev == dev && b->blockno == blockno){
+      b->refcnt++;
+      b->lastuse = ticks;
+      release(&bcache.bucketlock[i]);
       release(&bcache.lock);
       acquiresleep(&b->lock);
       return b;
     }
+  }
+  release(&bcache.bucketlock[i]);
+
+  // Look for the least recently used buffer that nobody holds, walking
+  // the buckets one at a time.  Taking each bucket lock while inspecting
+  // its chain is what makes the refcnt == 0 test trustworthy.
+  for(int k = 0; k < NBUCKET; k++){
+    int j = (i + k) % NBUCKET;
+
+    acquire(&bcache.bucketlock[j]);
+    struct buf *victim = 0;
+    for(b = bcache.bucket[j]; b != 0; b = b->next){
+      if(b->refcnt == 0 && (victim == 0 || b->lastuse < victim->lastuse))
+        victim = b;
+    }
+    if(victim == 0){
+      release(&bcache.bucketlock[j]);
+      continue;
+    }
+
+    bunlink(victim);          // still uses victim->blockno, i.e. bucket j
+    victim->dev = dev;
+    victim->blockno = blockno;
+    victim->valid = 0;
+    victim->refcnt = 1;
+    victim->lastuse = ticks;
+
+    if(j == i){
+      binsert(victim);        // bucket i is already locked
+      release(&bcache.bucketlock[i]);
+    } else {
+      acquire(&bcache.bucketlock[i]);
+      binsert(victim);
+      release(&bcache.bucketlock[i]);
+      release(&bcache.bucketlock[j]);
+    }
+
+    release(&bcache.lock);
+    acquiresleep(&victim->lock);
+    return victim;
   }
 
-  // Not cached.
-  // Recycle the least recently used (LRU) unused buffer.
-  for(b = bcache.head.prev; b != &bcache.head; b = b->prev){
-    if(b->refcnt == 0) {
-      b->dev = dev;
-      b->blockno = blockno;
-      b->valid = 0;
-      b->refcnt = 1;
-      release(&bcache.lock);
-      acquiresleep(&b->lock);
-      return b;
-    }
-  }
+  release(&bcache.lock);
   panic("bget: no buffers");
 }
 
@@ -112,7 +201,9 @@ bwrite(struct buf *b)
 }
 
 // Release a locked buffer.
-// Move to the head of the most-recently-used list.
+// Just drop the reference and record when it was last used; the buffer
+// stays where it is in its bucket, and bget uses lastuse to decide which
+// buffer to recycle.  No global lock needed, so this is cheap.
 void
 brelse(struct buf *b)
 {
@@ -121,33 +212,25 @@ brelse(struct buf *b)
 
   releasesleep(&b->lock);
 
-  acquire(&bcache.lock);
+  int i = BHASH(b->blockno);
+  acquire(&bcache.bucketlock[i]);
   b->refcnt--;
-  if (b->refcnt == 0) {
-    // no one is waiting for it.
-    b->next->prev = b->prev;
-    b->prev->next = b->next;
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
-  }
-  
-  release(&bcache.lock);
+  b->lastuse = ticks;
+  release(&bcache.bucketlock[i]);
 }
 
 void
 bpin(struct buf *b) {
-  acquire(&bcache.lock);
+  int i = BHASH(b->blockno);
+  acquire(&bcache.bucketlock[i]);
   b->refcnt++;
-  release(&bcache.lock);
+  release(&bcache.bucketlock[i]);
 }
 
 void
 bunpin(struct buf *b) {
-  acquire(&bcache.lock);
+  int i = BHASH(b->blockno);
+  acquire(&bcache.bucketlock[i]);
   b->refcnt--;
-  release(&bcache.lock);
+  release(&bcache.bucketlock[i]);
 }
-
-
