@@ -3,8 +3,13 @@
 #include "memlayout.h"
 #include "elf.h"
 #include "riscv.h"
-#include "defs.h"
+#include "spinlock.h"
+#include "sleeplock.h"
 #include "fs.h"
+#include "file.h"
+#include "fcntl.h"
+#include "proc.h"
+#include "defs.h"
 
 /*
  * the kernel's page table.
@@ -427,5 +432,99 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return 0;
   } else {
     return -1;
+  }
+}
+
+// Handle a page fault at va inside an mmap()ed region: allocate a page,
+// fill it from the file and install it in the page table.
+// Returns 0 if the fault was handled, -1 if it wasn't ours to fix.
+int
+vmafault(uint64 va)
+{
+  struct proc *p = myproc();
+  struct vma *v = 0;
+  pte_t *pte;
+  char *mem;
+  int perm;
+  uint64 off;
+
+  if(va >= MAXVA)
+    return -1;
+
+  for(int i = 0; i < NVMA; i++){
+    struct vma *o = &p->vmas[i];
+    if(o->used && va >= o->addr && va < o->addr + o->length){
+      v = o;
+      break;
+    }
+  }
+  if(v == 0)
+    return -1;
+
+  if((v->prot & (PROT_READ | PROT_WRITE | PROT_EXEC)) == 0)
+    return -1;
+
+  va = PGROUNDDOWN(va);
+
+  // the page may already be there: a write to a read-only mapping
+  // faults again with the pte still valid.  don't allocate twice.
+  pte = walk(p->pagetable, va, 0);
+  if(pte != 0 && (*pte & PTE_V))
+    return -1;
+
+  if((mem = kalloc()) == 0)
+    return -1;
+  memset(mem, 0, PGSIZE);
+
+  off = v->offset + (va - v->addr);
+  begin_op();
+  ilock(v->f->ip);
+  // readi() only copies bytes that exist in the file; the rest of the
+  // page stays zero, which is what the tests expect past end-of-file.
+  readi(v->f->ip, 0, (uint64)mem, (uint)off, PGSIZE);
+  iunlock(v->f->ip);
+  end_op();
+
+  perm = PTE_U;
+  if(v->prot & PROT_READ)
+    perm |= PTE_R;
+  if(v->prot & PROT_WRITE)
+    perm |= PTE_R | PTE_W;         // riscv forbids write-only pages
+  if(v->prot & PROT_EXEC)
+    perm |= PTE_X;
+
+  if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, perm) != 0){
+    kfree(mem);
+    return -1;
+  }
+  return 0;
+}
+
+// Unmap the pages of [addr, addr+length) of an mmap()ed region.
+// With MAP_SHARED the pages are written back to the file first.
+// Pages that were never touched are simply skipped.
+void
+vmaunmap(pagetable_t pagetable, uint64 addr, uint64 length, struct vma *v)
+{
+  uint64 va, end = addr + length;
+
+  for(va = PGROUNDDOWN(addr); va < end; va += PGSIZE){
+    pte_t *pte = walk(pagetable, va, 0);
+    if(pte == 0 || (*pte & PTE_V) == 0)
+      continue;
+    uint64 pa = PTE2PA(*pte);
+    if((v->flags & MAP_SHARED) && (v->prot & PROT_WRITE) && va >= v->addr){
+      uint64 off = v->offset + (va - v->addr);
+      uint64 n = PGSIZE;
+      if(va + n > v->addr + v->length)
+        n = v->addr + v->length - va;
+      begin_op();
+      ilock(v->f->ip);
+      writei(v->f->ip, 0, pa, (uint)off, (uint)n);
+      iunlock(v->f->ip);
+      end_op();
+    }
+    kfree((void*)pa);
+    *pte = 0;
   }
 }

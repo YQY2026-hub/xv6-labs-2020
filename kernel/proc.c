@@ -113,6 +113,8 @@ allocproc(void)
 
 found:
   p->pid = allocpid();
+  for(int i = 0; i < NVMA; i++)
+    p->vmas[i].used = 0;
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -296,6 +298,16 @@ fork(void)
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
+  // copy mmap()ed regions.  the child shares the same files but starts
+  // with no pages mapped; vmafault() fills them in on demand.
+  for(i = 0; i < NVMA; i++){
+    struct vma *v = &p->vmas[i];
+    if(v->used){
+      np->vmas[i] = *v;
+      filedup(v->f);
+    }
+  }
+
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
@@ -343,6 +355,17 @@ exit(int status)
 
   if(p == initproc)
     panic("init exiting");
+
+  // Unmap any mmap()ed regions, writing shared pages back to their
+  // files.  p->lock is not held here, so the log can sleep.
+  for(int i = 0; i < NVMA; i++){
+    struct vma *v = &p->vmas[i];
+    if(v->used){
+      vmaunmap(p->pagetable, v->addr, v->length, v);
+      fileclose(v->f);
+      v->used = 0;
+    }
+  }
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){

@@ -6,6 +6,7 @@
 
 #include "types.h"
 #include "riscv.h"
+#include "memlayout.h"
 #include "defs.h"
 #include "param.h"
 #include "stat.h"
@@ -549,6 +550,112 @@ sys_pipe(void)
     fileclose(rf);
     fileclose(wf);
     return -1;
+  }
+  return 0;
+}
+
+// Map a file into the calling process's address space.  Nothing is
+// read here: pages are filled in by vmafault() on the first access.
+// The addr argument is ignored; the kernel picks the address.
+uint64
+sys_mmap(void)
+{
+  uint64 addr, length, offset;
+  int prot, flags, fd;
+  struct file *f;
+  struct proc *p = myproc();
+  struct vma *v = 0;
+  uint64 sz, top;
+
+  if(argaddr(0, &addr) < 0 || argaddr(1, &length) < 0 ||
+     argint(2, &prot) < 0 || argint(3, &flags) < 0 ||
+     argfd(4, &fd, &f) < 0 || argaddr(5, &offset) < 0)
+    return -1;
+
+  if(length == 0 || f->type != FD_INODE)
+    return -1;
+
+  // a shared writable mapping writes through to the file, so the file
+  // must have been opened writable.  a private mapping never writes
+  // back, so it may map a read-only file.
+  if((prot & PROT_READ) && !f->readable)
+    return -1;
+  if((prot & PROT_WRITE) && !(flags & MAP_PRIVATE) && !f->writable)
+    return -1;
+
+  sz = PGROUNDUP(length);
+
+  for(int i = 0; i < NVMA; i++){
+    if(!p->vmas[i].used){
+      v = &p->vmas[i];
+      break;
+    }
+  }
+  if(v == 0)
+    return -1;
+
+  // place the new region just below the lowest existing one.
+  top = MMAPEND;
+  for(int i = 0; i < NVMA; i++){
+    struct vma *o = &p->vmas[i];
+    if(o->used && o->addr < top)
+      top = PGROUNDDOWN(o->addr);
+  }
+  if(top < sz || top - sz < PGROUNDUP(p->sz))
+    return -1;                      // would collide with the heap
+
+  v->addr = top - sz;
+  v->length = sz;
+  v->prot = prot;
+  v->flags = flags;
+  v->offset = offset;
+  v->f = f;
+  v->used = 1;
+  filedup(f);
+
+  return v->addr;
+}
+
+// Remove part or all of an mmap()ed region.
+uint64
+sys_munmap(void)
+{
+  uint64 addr, length;
+  struct proc *p = myproc();
+  struct vma *v = 0;
+
+  if(argaddr(0, &addr) < 0 || argaddr(1, &length) < 0 || length == 0)
+    return -1;
+
+  for(int i = 0; i < NVMA; i++){
+    struct vma *o = &p->vmas[i];
+    if(o->used && addr >= o->addr && addr < o->addr + o->length){
+      v = o;
+      break;
+    }
+  }
+  if(v == 0)
+    return -1;
+
+  if(addr + length > v->addr + v->length)
+    return -1;                      // runs off the end of the region
+  if(addr > v->addr && addr + length < v->addr + v->length)
+    return -1;                      // holes aren't supported
+
+  vmaunmap(p->pagetable, addr, length, v);
+
+  if(addr <= v->addr){
+    uint64 cut = addr + length - v->addr;   // bytes taken off the front
+    v->addr += cut;
+    v->offset += cut;
+    v->length -= cut;
+  } else {
+    v->length = addr - v->addr;             // truncated at the end
+  }
+
+  if(v->length == 0){
+    fileclose(v->f);
+    v->used = 0;
   }
   return 0;
 }
